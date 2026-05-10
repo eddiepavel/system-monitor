@@ -12,6 +12,7 @@
 #include <cmath>
 // lib to read from file
 #include <fstream>
+#include <sstream>
 // for the name of the computer and the logged in user
 #include <unistd.h>
 #include <limits.h>
@@ -74,26 +75,26 @@ struct Networks
 
 struct RX
 {
-    int bytes;
-    int packets;
-    int errs;
-    int drop;
-    int fifo;
-    int frame;
-    int compressed;
-    int multicast;
+    long long bytes;
+    long long packets;
+    long long errs;
+    long long drop;
+    long long fifo;
+    long long frame;
+    long long compressed;
+    long long multicast;
 };
 
 struct TX
 {
-    int bytes;
-    int packets;
-    int errs;
-    int drop;
-    int fifo;
-    int colls;
-    int carrier;
-    int compressed;
+    long long bytes;
+    long long packets;
+    long long errs;
+    long long drop;
+    long long fifo;
+    long long colls;
+    long long carrier;
+    long long compressed;
 };
 
 // system stats
@@ -102,6 +103,7 @@ const char *getOsName();
 string getLoggedInUser();
 string getHostname();
 void getProcessStats(int &running, int &sleeping, int &uninterruptible, int &zombie, int &tracedStopped, int &interruptible);
+int getTotalTasks();
 float getCPUUsage();
 int getFanSpeed();
 float getTemperature();
@@ -116,7 +118,7 @@ void memoryProcessesWindow(const char *id, ImVec2 size, ImVec2 position);
 // network
 void getNetworkInfo(Networks &networks);
 void getNetworkStats(const char *interface, RX &rx, TX &tx);
-void displayUsage(const char *label, long bytes);
+void displayUsage(const char *label, long long bytes);
 void networkWindow(const char *id, ImVec2 size, ImVec2 position);
 
 #endif

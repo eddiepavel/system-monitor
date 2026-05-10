@@ -65,20 +65,13 @@ string getHostname()
 // get process information
 void getProcessStats(int &running, int &sleeping, int &uninterruptible, int &zombie, int &tracedStopped, int &interruptible)
 {
-    ifstream file("/proc/stat");
-    string line;
-    while (getline(file, line))
-    {
-        if (line.find("procs_running") != string::npos)
-        {
-            sscanf(line.c_str(), "procs_running %d", &running);
-        }
-        else if (line.find("procs_blocked") != string::npos)
-        {
-            sscanf(line.c_str(), "procs_blocked %d", &uninterruptible);
-        }
-    }
-    file.close();
+    // Initialize all counters to 0
+    running = 0;
+    sleeping = 0;
+    uninterruptible = 0;
+    zombie = 0;
+    tracedStopped = 0;
+    interruptible = 0;
 
     DIR *dir;
     struct dirent *ent;
@@ -92,16 +85,30 @@ void getProcessStats(int &running, int &sleeping, int &uninterruptible, int &zom
                 ifstream statFile(path);
                 if (statFile.is_open())
                 {
-                    string state;
-                    statFile >> state >> state >> state;
-                    if (state == "S")
-                        sleeping++;
-                    else if (state == "Z")
-                        zombie++;
-                    else if (state == "T")
-                        tracedStopped++;
-                    else if (state == "I")
-                        interruptible++;
+                    string line;
+                    getline(statFile, line);
+
+                    // Find the last ')' to properly parse the state field
+                    size_t lastParen = line.rfind(')');
+                    if (lastParen != string::npos && lastParen + 2 < line.length())
+                    {
+                        char state = line[lastParen + 2];
+
+                        if (state == 'R')
+                            running++;
+                        else if (state == 'S')
+                            sleeping++;
+                        else if (state == 'D')
+                            uninterruptible++;
+                        else if (state == 'Z')
+                            zombie++;
+                        else if (state == 'T')
+                            tracedStopped++;
+                        else if (state == 't')
+                            tracedStopped++;
+                        else if (state == 'I')
+                            interruptible++;
+                    }
                     statFile.close();
                 }
             }
@@ -110,35 +117,43 @@ void getProcessStats(int &running, int &sleeping, int &uninterruptible, int &zom
     }
 }
 
+// get total number of tasks/processes
+int getTotalTasks()
+{
+    int running, sleeping, uninterruptible, zombie, tracedStopped, interruptible;
+    getProcessStats(running, sleeping, uninterruptible, zombie, tracedStopped, interruptible);
+    return running + sleeping + uninterruptible + zombie + tracedStopped + interruptible;
+}
+
 // get CPU usage
 float getCPUUsage()
 {
-    static long long lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
-    long long totalUser, totalUserLow, totalSys, totalIdle, total;
-
+    static long long lastTotal = 0, lastIdle = 0;
+    
     ifstream file("/proc/stat");
-    file >> totalUser >> totalUserLow >> totalSys >> totalIdle;
+    string cpu;
+    long long user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice;
+    
+    file >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal >> guest >> guest_nice;
     file.close();
 
-    if (lastTotalUser == 0)
+    long long total = user + nice + system + idle + iowait + irq + softirq + steal;
+    long long idleTime = idle + iowait;
+
+    if (lastTotal == 0)
     {
-        lastTotalUser = totalUser;
-        lastTotalUserLow = totalUserLow;
-        lastTotalSys = totalSys;
-        lastTotalIdle = totalIdle;
+        lastTotal = total;
+        lastIdle = idleTime;
         return 0;
     }
 
-    total = (totalUser - lastTotalUser) + (totalUserLow - lastTotalUserLow) + (totalSys - lastTotalSys);
-    float percent = total;
-    total += (totalIdle - lastTotalIdle);
-    percent /= total;
-    percent *= 100;
+    long long totalDiff = total - lastTotal;
+    long long idleDiff = idleTime - lastIdle;
 
-    lastTotalUser = totalUser;
-    lastTotalUserLow = totalUserLow;
-    lastTotalSys = totalSys;
-    lastTotalIdle = totalIdle;
+    float percent = 100.0 * (totalDiff - idleDiff) / (float)totalDiff;
+
+    lastTotal = total;
+    lastIdle = idleTime;
 
     return percent;
 }
@@ -147,6 +162,8 @@ float getCPUUsage()
 int getFanSpeed()
 {
     ifstream file("/sys/class/hwmon/hwmon0/fan1_input");
+    if (!file.is_open())
+        return 0;
     int speed;
     file >> speed;
     file.close();
@@ -157,6 +174,8 @@ int getFanSpeed()
 int getFanLevel()
 {
     ifstream file("/sys/class/hwmon/hwmon0/pwm1");
+    if (!file.is_open())
+        return 0;
     int level;
     file >> level;
     file.close();
@@ -167,10 +186,35 @@ int getFanLevel()
 float getTemperature()
 {
     ifstream file("/sys/class/thermal/thermal_zone0/temp");
-    float temp;
-    file >> temp;
-    file.close();
-    return temp / 1000.0;
+    if (file.is_open())
+    {
+        float temp;
+        file >> temp;
+        file.close();
+        return temp / 1000.0;
+    }
+
+    file.open("/proc/acpi/ibm/thermal");
+    if (file.is_open())
+    {
+        string line;
+        while (getline(file, line))
+        {
+            if (line.find("temperatures:") != string::npos)
+            {
+                size_t pos = line.find_last_of(' ');
+                if (pos != string::npos)
+                {
+                    float temp = stof(line.substr(pos + 1));
+                    file.close();
+                    return temp;
+                }
+            }
+        }
+        file.close();
+    }
+
+    return 0.0;
 }
 
 void systemWindow(const char *id, ImVec2 size, ImVec2 position)
@@ -185,6 +229,8 @@ void systemWindow(const char *id, ImVec2 size, ImVec2 position)
 
     int running = 0, sleeping = 0, uninterruptible = 0, zombie = 0, tracedStopped = 0, interruptible = 0;
     getProcessStats(running, sleeping, uninterruptible, zombie, tracedStopped, interruptible);
+    int total = running + sleeping + uninterruptible + zombie + tracedStopped + interruptible;
+    ImGui::Text("Total Tasks: %d", total);
     ImGui::Text("Running: %d", running);
     ImGui::Text("Sleeping: %d", sleeping);
     ImGui::Text("Uninterruptible: %d", uninterruptible);
@@ -197,18 +243,24 @@ void systemWindow(const char *id, ImVec2 size, ImVec2 position)
     static bool animate = true;
     static float fps = 30.0f;
     static float yScale = 1.0f;
+    static int frameCount = 0;
 
     if (ImGui::BeginTabBar("SystemTabs"))
     {
         if (ImGui::BeginTabItem("CPU"))
         {
             ImGui::Checkbox("Animate", &animate);
-            ImGui::SliderFloat("FPS", &fps, 1.0f, 60.0f);
-            ImGui::SliderFloat("Y Scale", &yScale, 0.1f, 10.0f);
+            ImGui::SliderFloat("FPS##CPU", &fps, 1.0f, 60.0f);
+            ImGui::SliderFloat("Y Scale##CPU", &yScale, 0.1f, 10.0f);
 
             static float values[90] = {0};
             static int values_offset = 0;
-            if (animate)
+
+            // Update based on FPS slider (assuming 60 FPS render target)
+            int frames_per_update = (int)(60.0f / fps);
+            if (frames_per_update < 1) frames_per_update = 1;
+
+            if (animate && frameCount % frames_per_update == 0)
             {
                 values[values_offset] = getCPUUsage();
                 values_offset = (values_offset + 1) % IM_ARRAYSIZE(values);
@@ -222,13 +274,17 @@ void systemWindow(const char *id, ImVec2 size, ImVec2 position)
 
         if (ImGui::BeginTabItem("Fan"))
         {
-            ImGui::Checkbox("Animate", &animate);
-            ImGui::SliderFloat("FPS", &fps, 1.0f, 60.0f);
-            ImGui::SliderFloat("Y Scale", &yScale, 0.1f, 10.0f);
+            ImGui::Checkbox("Animate##Fan", &animate);
+            ImGui::SliderFloat("FPS##Fan", &fps, 1.0f, 60.0f);
+            ImGui::SliderFloat("Y Scale##Fan", &yScale, 0.1f, 10.0f);
 
             static float values[90] = {0};
             static int values_offset = 0;
-            if (animate)
+
+            int frames_per_update = (int)(60.0f / fps);
+            if (frames_per_update < 1) frames_per_update = 1;
+
+            if (animate && frameCount % frames_per_update == 0)
             {
                 values[values_offset] = getFanSpeed();
                 values_offset = (values_offset + 1) % IM_ARRAYSIZE(values);
@@ -237,20 +293,24 @@ void systemWindow(const char *id, ImVec2 size, ImVec2 position)
             char overlay[32];
             sprintf(overlay, "Fan Speed: %d RPM", (int)values[(values_offset - 1 + IM_ARRAYSIZE(values)) % IM_ARRAYSIZE(values)]);
             ImGui::Text("Fan Status: %s", values[values_offset] > 0 ? "Active" : "Inactive");
-            ImGui::Text("Fan Level: %d", getFanLevel()); // Add this line to display fan level
+            ImGui::Text("Fan Level: %d", getFanLevel());
             ImGui::PlotLines("##Fan", values, IM_ARRAYSIZE(values), values_offset, overlay, 0.0f, yScale, ImVec2(0, 80));
             ImGui::EndTabItem();
         }
 
         if (ImGui::BeginTabItem("Thermal"))
         {
-            ImGui::Checkbox("Animate", &animate);
-            ImGui::SliderFloat("FPS", &fps, 1.0f, 60.0f);
-            ImGui::SliderFloat("Y Scale", &yScale, 0.1f, 10.0f);
+            ImGui::Checkbox("Animate##Thermal", &animate);
+            ImGui::SliderFloat("FPS##Thermal", &fps, 1.0f, 60.0f);
+            ImGui::SliderFloat("Y Scale##Thermal", &yScale, 0.1f, 10.0f);
 
             static float values[90] = {0};
             static int values_offset = 0;
-            if (animate)
+
+            int frames_per_update = (int)(60.0f / fps);
+            if (frames_per_update < 1) frames_per_update = 1;
+
+            if (animate && frameCount % frames_per_update == 0)
             {
                 values[values_offset] = getTemperature();
                 values_offset = (values_offset + 1) % IM_ARRAYSIZE(values);
@@ -264,6 +324,8 @@ void systemWindow(const char *id, ImVec2 size, ImVec2 position)
 
         ImGui::EndTabBar();
     }
+
+    frameCount++;
 
     ImGui::End();
 }
